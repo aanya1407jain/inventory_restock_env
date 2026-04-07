@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-inventory_restock_env"
+version = "1.0.0"
+description = "Inventory Restocking Decision System for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+server = "inventory_restock_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["inventory_restock_env", "inventory_restock_env.server"]
+package-dir = { "inventory_restock_env" = ".", "inventory_restock_env.server" = "server" }
