@@ -1,28 +1,24 @@
-# ── Inventory Restocking Decision System ─────────────────────────────────────
-# HuggingFace Spaces Docker build — port 7860 required
-# ─────────────────────────────────────────────────────────────────────────────
+FROM python:3.11
 
-FROM python:3.11-slim
+# Create a user
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
 
 WORKDIR /app
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+# Copy requirements from the root (make sure you uploaded it to the main folder!)
+COPY --chown=user requirements.txt .
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Install dependencies
-COPY server/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy everything else
+COPY --chown=user . .
 
-# Copy application code
-COPY models.py                                          /app/models.py
-COPY server/__init__.py                                 /app/server/__init__.py
-COPY server/app.py                                      /app/server/app.py
-COPY server/inventory_restock_env_environment.py        /app/server/inventory_restock_env_environment.py
+# IMPORTANT: This tells Python to look in the 'server' folder for imports
+ENV PYTHONPATH=/app:/app/server
 
-RUN touch /app/__init__.py
-
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+# Run the app using the 'server' folder path
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
 
 EXPOSE 7860
 
