@@ -3,12 +3,10 @@
 inference.py — Inventory Restocking Decision System Baseline Agent
 ==================================================================
 Runs an LLM agent against all 3 tasks.
-
 Required environment variables:
     API_BASE_URL   LLM API endpoint (default: https://router.huggingface.co/v1)
     MODEL_NAME     Model identifier
     HF_TOKEN       HuggingFace / API key
-
 Usage:
     python inference.py
     python inference.py --url http://localhost:7860
@@ -39,7 +37,6 @@ MAX_TOKENS  = 512
 SYSTEM_PROMPT = textwrap.dedent("""
     You are an expert supply chain and inventory management AI.
     You will be given inventory data and must respond with a JSON object.
-
     Rules:
     - Reply with ONLY a valid JSON object — no explanation, no markdown fences
     - For T1 (identify low stock): {"low_stock_ids": ["P001", "P003"]}
