@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """
 inference.py — Inventory Restocking Decision System Baseline Agent
-==================================================================
-Runs an LLM agent against all 3 tasks.
-Required environment variables:
-    API_BASE_URL   LLM API endpoint (default: https://router.huggingface.co/v1)
-    MODEL_NAME     Model identifier
-    HF_TOKEN       HuggingFace / API key
-Usage:
-    python inference.py
-    python inference.py --url http://localhost:7860
-    python inference.py --task T1_identify_low_stock
+Updated with [START]/[STEP]/[END] structured output for Meta x SST Hackathon validation.
 """
-
 import argparse
 import json
 import os
@@ -22,7 +12,6 @@ import time
 import urllib.request
 import urllib.error
 from typing import Optional
-
 from openai import OpenAI
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -45,7 +34,6 @@ SYSTEM_PROMPT = textwrap.dedent("""
     - All product IDs are P001–P005
     - Use only integer quantities in orders
 """).strip()
-
 
 def build_prompt(obs: dict) -> str:
     tid  = obs.get("task_id", "")
@@ -71,7 +59,6 @@ def build_prompt(obs: dict) -> str:
             f"lead_time={p['lead_time_days']}d "
             f"hold_cost={p['holding_cost_per_day']}/unit/day order_cost={p['order_cost']}"
         )
-
     lines += ["", "DEMAND HISTORY (oldest→newest, last 14 days):"]
     for pid, h in hist.items():
         lines.append(f"  {pid}: {h}")
@@ -97,9 +84,7 @@ def build_prompt(obs: dict) -> str:
     lines += ["", "Your JSON response:"]
     return "\n".join(lines)
 
-
 def call_llm(client: OpenAI, prompt: str) -> dict:
-    """Call LLM and parse JSON action."""
     completion = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
@@ -110,7 +95,6 @@ def call_llm(client: OpenAI, prompt: str) -> dict:
         max_tokens=MAX_TOKENS,
     )
     text = (completion.choices[0].message.content or "").strip()
-    # Strip markdown code fences
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(l for l in lines if not l.strip().startswith("```")).strip()
@@ -119,9 +103,7 @@ def call_llm(client: OpenAI, prompt: str) -> dict:
     except json.JSONDecodeError:
         return {}
 
-
 # ── HTTP Client ───────────────────────────────────────────────────────────────
-
 class EnvClient:
     def __init__(self, base_url: str):
         self._url = base_url.rstrip("/")
@@ -139,14 +121,9 @@ class EnvClient:
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"HTTP {e.code}: {e.read().decode()[:200]}") from e
 
-    def _get(self, path: str) -> dict:
-        with urllib.request.urlopen(f"{self._url}{path}", timeout=10) as r:
-            return json.loads(r.read())
-
     def reset(self, task_id: Optional[str] = None) -> dict:
         body: dict = {}
-        if task_id:
-            body["task_id"] = task_id
+        if task_id: body["task_id"] = task_id
         obs = self._post("/reset", body)
         self._episode_id = obs.get("episode_id")
         return obs
@@ -158,63 +135,51 @@ class EnvClient:
         return self._post("/step", body)
 
     def tasks(self) -> list:
-        try:
-            return [t["task_id"] for t in self._get("/tasks").get("tasks", [])]
-        except Exception:
-            return ["T1_identify_low_stock", "T2_predict_demand", "T3_optimize_restock"]
-
+        # Fallback list if server GET /tasks fails
+        return ["T1_identify_low_stock", "T2_predict_demand", "T3_optimize_restock"]
 
 # ── Task runner ───────────────────────────────────────────────────────────────
-
 def run_task(client: OpenAI, env: EnvClient, task_id: str) -> float:
-    print(f"\n{'─'*60}")
-    print(f"  Task: {task_id}")
-    print(f"{'─'*60}")
-
+    # [START] tag required by Validator
+    print(f"[START] task={task_id}", flush=True)
+    
     obs       = env.reset(task_id=task_id)
     max_steps = obs.get("max_attempts", 5)
     best      = 0.0
+    steps_taken = 0
 
-    print(f"  Max steps: {max_steps}")
-
-    for step in range(1, max_steps + 1):
+    for step_idx in range(1, max_steps + 1):
         if obs.get("done", False):
             break
-
+        
+        steps_taken += 1
         prompt = build_prompt(obs)
+        
         try:
             action_data = call_llm(client, prompt)
-        except Exception as exc:
-            print(f"  [{step}] LLM error: {exc}")
-            action_data = {}
-
-        try:
             result = env.step(action_data)
-        except RuntimeError as exc:
-            print(f"  [{step}] Step error: {exc}")
+        except Exception as exc:
+            # We print an error but still emit [STEP] to keep the validator informed
+            print(f"Error during {task_id} step {step_idx}: {exc}", file=sys.stderr)
             break
 
         score   = result.get("score", 0.0)
         reward  = result.get("reward", 0.0)
         best    = max(best, score)
         done    = result.get("done", False)
-        fb      = result.get("last_action_feedback", "")[:80]
-
-        icon = "✅" if score >= 0.9 else ("🟡" if score > 0.4 else "❌")
-        print(f"  [{step}/{max_steps}] score={score:.2f}  reward={reward:+.3f}  {icon}")
-        if fb:
-            print(f"    {fb}")
+        
+        # [STEP] tag required by Validator
+        print(f"[STEP] step={step_idx} reward={reward}", flush=True)
 
         obs = result
         if done:
             break
 
-    print(f"  Best score: {best:.2f}")
+    # [END] tag required by Validator
+    print(f"[END] task={task_id} score={best} steps={steps_taken}", flush=True)
     return best
 
-
 # ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(description="Inventory Restock baseline agent")
     parser.add_argument("--url",  default=ENV_URL)
@@ -225,48 +190,25 @@ def main():
         print("ERROR: Set HF_TOKEN environment variable", file=sys.stderr)
         sys.exit(1)
 
-    print("=" * 60)
-    print("  Inventory Restocking — Baseline Inference")
-    print("=" * 60)
-    print(f"  Model  : {MODEL_NAME}")
-    print(f"  Env URL: {args.url}")
-
     llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env = EnvClient(args.url)
+    
+    # Task list
+    if args.task:
+        task_ids = [args.task]
+    else:
+        task_ids = ["T1_identify_low_stock", "T2_predict_demand", "T3_optimize_restock"]
 
-    task_ids = [args.task] if args.task else env.tasks()
-    scores   = {}
-    start    = time.time()
-
+    scores = {}
     for tid in task_ids:
         try:
             scores[tid] = run_task(llm, env, tid)
         except Exception as exc:
-            print(f"\n  ERROR on {tid}: {exc}")
+            print(f"Critical error on {tid}: {exc}", file=sys.stderr)
             scores[tid] = 0.0
 
-    elapsed = time.time() - start
-    avg     = sum(scores.values()) / len(scores) if scores else 0.0
-
-    print(f"\n{'='*60}")
-    print("  BASELINE RESULTS")
-    print(f"{'='*60}")
-    diff_map = {
-        "T1_identify_low_stock": "easy",
-        "T2_predict_demand":     "medium",
-        "T3_optimize_restock":   "hard",
-    }
-    for tid, s in scores.items():
-        bar  = "█" * int(s * 20)
-        diff = diff_map.get(tid, "")
-        print(f"  {tid:<35} {s:.2f}  [{diff}]")
-        print(f"    |{bar:<20}|")
-    print(f"  {'─'*50}")
-    print(f"  {'AVERAGE':<35} {avg:.2f}")
-    print(f"\n  Completed in {elapsed:.1f}s")
-    print(f"{'='*60}")
+    avg = sum(scores.values()) / len(scores) if scores else 0.0
     sys.exit(0 if avg > 0 else 1)
-
 
 if __name__ == "__main__":
     main()
