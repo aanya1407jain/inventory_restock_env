@@ -1,11 +1,9 @@
 """
 Inventory Restocking Decision System — Environment Implementation
-
 Three tasks of increasing difficulty:
   T1  identify_low_stock   — Easy:   find products below reorder point
   T2  predict_demand       — Medium: forecast next-period demand from history
   T3  optimize_restock     — Hard:   run a 14-day simulation, minimize cost & stockouts
-
 Reward shaping:
   T1 / T2 : immediate score on submission, -0.05 stagnation penalty
   T3       : per-day shaped reward = service_level_bonus - holding_cost - stockout_penalty
@@ -154,38 +152,42 @@ TASK_MAP = {t.task_id: t for t in TASKS}
 # ─────────────────────────────────────────────────────────────────────────────
 # Graders
 # ─────────────────────────────────────────────────────────────────────────────
-
 def _grade_t1(low_stock_ids: List[str], true_low: List[str]) -> Tuple[float, str]:
-    """F1 score for low-stock identification."""
+    """F1 score for low-stock identification, clamped to (0.01, 0.99)."""
     if not true_low:
-        return (1.0 if not low_stock_ids else 0.5), "No products are low on stock."
-
+        # Clamped: 1.0 becomes 0.99, 0.5 remains 0.5
+        score = 0.99 if not low_stock_ids else 0.5
+        return score, "No products are low on stock."
+        
     predicted = set(pid.strip().upper() for pid in low_stock_ids)
     actual    = set(p.upper() for p in true_low)
-
+    
     tp = len(predicted & actual)
     fp = len(predicted - actual)
     fn = len(actual - predicted)
-
+    
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1        = (2 * precision * recall / (precision + recall)
-                 if (precision + recall) > 0 else 0.0)
-
+    
+    f1 = (2 * precision * recall / (precision + recall) 
+          if (precision + recall) > 0 else 0.0)
+    
+    # --- CRITICAL FIX: Clamp score strictly between 0 and 1 ---
+    safe_f1 = max(0.01, min(0.99, f1))
+    
     feedback = (
         f"True low-stock: {sorted(actual)}. "
         f"You predicted: {sorted(predicted)}. "
         f"TP={tp} FP={fp} FN={fn} → F1={f1:.2f}"
     )
-    return round(f1, 4), feedback
+    return round(safe_f1, 4), feedback
 
 
-def _grade_t2(forecast: Dict[str, float],
-              true_demands: Dict[str, float]) -> Tuple[float, str]:
-    """Score based on Mean Absolute Percentage Error (lower MAPE → higher score)."""
+def _grade_t2(forecast: Dict[str, float], true_demands: Dict[str, float]) -> Tuple[float, str]:
+    """Score based on MAPE, clamped to (0.01, 0.99)."""
     if not forecast:
-        return 0.0, "Empty forecast submitted."
-
+        return 0.01, "Empty forecast submitted."
+        
     errors = []
     details = []
     for pid, true_val in true_demands.items():
@@ -196,36 +198,43 @@ def _grade_t2(forecast: Dict[str, float],
             pct_err = 0.0 if pred == 0 else 1.0
         errors.append(pct_err)
         details.append(f"{pid}: predicted={pred:.1f} actual={true_val:.1f} err={pct_err*100:.0f}%")
-
+        
     mape  = sum(errors) / len(errors) if errors else 1.0
-    score = max(0.0, 1.0 - mape)          # MAPE=0% → 1.0, MAPE=100% → 0.0
+    score = max(0.0, 1.0 - mape) # Raw score calculation
+    
+    # --- CRITICAL FIX: Clamp score strictly between 0 and 1 ---
+    safe_score = max(0.01, min(0.99, score))
+    
     feedback = f"MAPE={mape*100:.1f}% | " + " | ".join(details)
-    return round(score, 4), feedback
-
+    return round(safe_score, 4), feedback
 
 def _grade_t3_step(stocks: Dict[str, int],
                    demands: Dict[str, int],
                    holding_cost_today: float,
                    order_cost_today: float) -> Tuple[float, str]:
-    """Per-day reward for T3."""
+    """Per-day reward for T3, clamped to (0.01, 0.99)."""
     n_products  = len(stocks)
     stockouts   = sum(1 for pid, s in stocks.items() if s <= 0)
     service_lvl = (n_products - stockouts) / n_products
 
-    # Normalise costs (roughly 0–1 scale based on max possible daily cost)
+    # Normalise costs
     max_daily_hold  = sum(p["max_stock"] * p["holding_cost_per_day"] for p in PRODUCTS)
     max_daily_order = sum(p["order_cost"] for p in PRODUCTS)
     norm_hold  = holding_cost_today  / max(max_daily_hold,  1)
     norm_order = order_cost_today    / max(max_daily_order, 1)
 
     reward = (0.6 * service_lvl) - (0.2 * norm_hold) - (0.2 * norm_order)
+    
+    # --- CLAMP REWARD (Safety for validator) ---
+    safe_reward = max(0.01, min(0.99, reward))
+    
     feedback = (
         f"Stockouts={stockouts}/{n_products}  "
         f"HoldCost={holding_cost_today:.1f}  "
         f"OrderCost={order_cost_today:.1f}  "
         f"DayReward={reward:.3f}"
     )
-    return round(reward, 4), feedback
+    return round(safe_reward, 4), feedback
 
 
 def _grade_t3_final(total_holding: float,
@@ -233,11 +242,11 @@ def _grade_t3_final(total_holding: float,
                     total_stockout_days: int,
                     n_products: int,
                     n_days: int) -> Tuple[float, str]:
-    """Episode-end score for T3."""
+    """Episode-end score for T3, clamped to (0.01, 0.99)."""
     max_stockout_days = n_products * n_days
     service_level = 1.0 - (total_stockout_days / max(max_stockout_days, 1))
 
-    # EOQ-based ideal cost: optimal order quantity per product
+    # EOQ-based ideal cost
     ideal_total = 0.0
     for p in PRODUCTS:
         d  = p["avg_daily_demand"]
@@ -251,11 +260,14 @@ def _grade_t3_final(total_holding: float,
     ideal_total = max(ideal_total, 1.0)
 
     actual_total = total_holding + total_order
-    # cost_ratio: 1.0 = perfect, 3.0+ = very poor
     cost_ratio  = min(actual_total / ideal_total, 3.0)
     cost_score  = max(0.0, 1.0 - (cost_ratio - 1.0) / 2.0)
 
-    score = round(0.6 * service_level + 0.4 * cost_score, 4)
+    score = 0.6 * service_level + 0.4 * cost_score
+    
+    # --- CRITICAL FIX: Clamp score strictly between 0 and 1 ---
+    safe_score = max(0.01, min(0.99, score))
+    
     feedback = (
         f"ServiceLevel={service_level*100:.1f}%  "
         f"TotalCost={actual_total:.1f}  "
@@ -263,9 +275,7 @@ def _grade_t3_final(total_holding: float,
         f"CostScore={cost_score:.2f}  "
         f"FinalScore={score:.2f}"
     )
-    return score, feedback
-
-
+    return round(safe_score, 4), feedback
 # ─────────────────────────────────────────────────────────────────────────────
 # T1 setup: deterministic snapshot (some products below reorder point)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,7 +298,6 @@ T1_TRUE_LOW = [pid for pid, stock in T1_STOCK.items()
 class InventoryRestockEnvironment(Environment):
     """
     Inventory Restocking Decision System.
-
     T1 (easy)   — single-step identification task
     T2 (medium) — single-step demand forecasting task
     T3 (hard)   — 14-step simulation with daily reorder decisions
